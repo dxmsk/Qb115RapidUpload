@@ -118,6 +118,18 @@ class TaskRepository:
                 );
                 """
             )
+            db_version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if db_version < 2:
+                # v0.1 scanned every historical qB completion. Do not carry that
+                # automatically-created backlog into the incremental detector.
+                connection.execute(
+                    """UPDATE tasks SET status='CANCELLED',reason_code='LEGACY_BULK_SCAN_RESET',
+                           cancel_requested=1,last_error_message='升级后已停止旧版全量扫描任务',
+                           next_retry_at=NULL,updated_at=?,version=version+1
+                       WHERE status IN ('WAITING','PROCESSING','RETRY_WAIT')""",
+                    (utcnow(),),
+                )
+                connection.execute("PRAGMA user_version = 2")
             now = utcnow()
             rows = connection.execute(
                 "SELECT id, status FROM tasks WHERE status = ?",
@@ -188,6 +200,33 @@ class TaskRepository:
             ).fetchone()
             return int(row["id"])
 
+    def watching_tasks(self) -> List[Dict[str, Any]]:
+        now = utcnow()
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """SELECT id,downloader,download_hash,torrent_name,next_retry_at
+                   FROM tasks
+                   WHERE status='WATCHING' AND cancel_requested=0
+                     AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                   ORDER BY id""",
+                (now,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def schedule_watch_retry(self, task_id: int, minutes: int, message: str) -> bool:
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat(timespec="seconds")
+        retry_at = (now_dt + timedelta(minutes=max(1, int(minutes)))).isoformat(timespec="seconds")
+        with self._lock, self._connect() as connection:
+            return bool(
+                connection.execute(
+                    """UPDATE tasks SET next_retry_at=?,last_error_code='QB_FILE_LIST_ERROR',
+                           last_error_message=?,updated_at=?,version=version+1
+                       WHERE id=? AND status='WATCHING' AND cancel_requested=0""",
+                    (retry_at, (message or "qB 文件列表读取失败")[:1000], now, task_id),
+                ).rowcount
+            )
+
     def snapshot_completed(
         self,
         downloader: str,
@@ -241,7 +280,8 @@ class TaskRepository:
             connection.execute(
                 """UPDATE tasks SET torrent_name=?, save_path=?, content_path=?, target_cid=?,
                        status=?, completed_at=COALESCE(completed_at,?), organized_at=?, reason_code=?,
-                       cancel_requested=?, updated_at=?, version=version+1
+                       cancel_requested=?, next_retry_at=NULL,last_error_code=NULL,last_error_message=NULL,
+                       updated_at=?, version=version+1
                    WHERE id=?""",
                 (
                     torrent_name or row["torrent_name"],
@@ -523,6 +563,29 @@ class TaskRepository:
                           (SELECT COUNT(*) FROM task_files f WHERE f.task_id=t.id) AS file_count,
                           (SELECT COUNT(*) FROM task_files f WHERE f.task_id=t.id AND f.status='SUCCESS') AS success_count
                    FROM tasks t ORDER BY t.id DESC LIMIT ?""",
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def successful_tasks(self, limit: int = 100) -> List[Dict[str, Any]]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """SELECT t.*,
+                          (SELECT COUNT(*) FROM task_files f WHERE f.task_id=t.id) AS file_count,
+                          (SELECT COALESCE(SUM(
+                              CASE
+                                  WHEN f.observed_size >= 0 THEN f.observed_size
+                                  WHEN f.expected_size >= 0 THEN f.expected_size
+                                  ELSE 0
+                              END
+                          ), 0) FROM task_files f WHERE f.task_id=t.id) AS total_size,
+                          (SELECT GROUP_CONCAT(DISTINCT f.remote_relative_dir)
+                           FROM task_files f
+                           WHERE f.task_id=t.id AND f.remote_relative_dir <> '') AS remote_dirs
+                   FROM tasks t
+                   WHERE t.status='SUCCESS'
+                   ORDER BY t.rapid_uploaded_at DESC, t.id DESC
+                   LIMIT ?""",
                 (max(1, min(int(limit), 500)),),
             ).fetchall()
             return [dict(row) for row in rows]

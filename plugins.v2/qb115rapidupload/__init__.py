@@ -1,5 +1,6 @@
 import re
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,9 +17,9 @@ from .repository import TaskRepository
 
 class Qb115RapidUpload(_PluginBase):
     plugin_name = "qB 115 秒传"
-    plugin_desc = "qBittorrent 下载完成后只读计算 SHA1 并秒传至 115"
+    plugin_desc = "只处理 qBittorrent 新完成种子，按本地目录只读计算 SHA1 并秒传至 115"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/upload.png"
-    plugin_version = "0.1.0"
+    plugin_version = "0.2.0"
     plugin_author = "Codex"
     author_url = ""
     plugin_config_prefix = "qb115rapidupload_"
@@ -32,6 +33,8 @@ class Qb115RapidUpload(_PluginBase):
         self._enabled = True
         self._cookie_115 = ""
         self._target_cid = "0"
+        self._rapid_upload_path = ""
+        self._rapid_upload_paths: List[str] = []
         self._retry_interval_minutes = 30
         self._stop_after_organized = True
         self._cancel_organize_after_success = True
@@ -46,6 +49,8 @@ class Qb115RapidUpload(_PluginBase):
         self._enabled = bool(config.get("enabled", True))
         self._cookie_115 = str(config.get("cookie_115") or "").strip()
         self._target_cid = self._normalize_target_cid(config.get("target_cid", "0"))
+        self._rapid_upload_paths = self._normalize_rapid_paths(config.get("rapid_upload_path"))
+        self._rapid_upload_path = "\n".join(self._rapid_upload_paths)
         self._retry_interval_minutes = self._normalize_retry(config.get("retry_interval_minutes", 30))
         self._stop_after_organized = bool(config.get("stop_after_organized", True))
         self._cancel_organize_after_success = bool(config.get("cancel_organize_after_success", True))
@@ -53,7 +58,11 @@ class Qb115RapidUpload(_PluginBase):
 
         self._repository = TaskRepository(self.get_data_path() / "qb115rapidupload.db")
         self._client = RapidUpload115Client(self._cookie_115) if self._cookie_115 else None
-        self._detector = CompletionDetector(self._repository, lambda: self._target_cid)
+        self._detector = CompletionDetector(
+            self._repository,
+            lambda: self._target_cid,
+            source_paths_getter=lambda: self._rapid_upload_paths,
+        )
         self._coordinator = TaskCoordinator(
             self._repository,
             client_getter=lambda: self._client,
@@ -67,6 +76,38 @@ class Qb115RapidUpload(_PluginBase):
     def _normalize_target_cid(value: Any) -> str:
         value = str(value if value is not None else "0").strip()
         return value if re.fullmatch(r"\d+", value) else "0"
+
+    @staticmethod
+    def _default_rapid_upload_path() -> str:
+        """Use MoviePilot's highest-priority local download directory by default."""
+        try:
+            from app.helper.directory import DirectoryHelper
+
+            directories = DirectoryHelper().get_local_download_dirs()
+            for directory in directories:
+                path = str(getattr(directory, "download_path", "") or "").strip()
+                if path:
+                    return path
+        except Exception:
+            pass
+        return ""
+
+    @classmethod
+    def _normalize_rapid_paths(cls, value: Any) -> List[str]:
+        if isinstance(value, (list, tuple, set)):
+            raw_values = value
+        else:
+            raw = str(value or "").strip()
+            raw_values = re.split(r"[,\r\n]+", raw) if raw else []
+        paths = []
+        for item in raw_values:
+            path = str(item or "").strip()
+            if path and path not in paths:
+                paths.append(path)
+        if paths:
+            return paths
+        default_path = cls._default_rapid_upload_path()
+        return [default_path] if default_path else []
 
     @staticmethod
     def _normalize_retry(value: Any) -> int:
@@ -146,6 +187,21 @@ class Qb115RapidUpload(_PluginBase):
                                             "type": "info",
                                             "variant": "tonal",
                                             "text": "插件只读取 qB 完成文件计算 SHA1，不会移动、重命名、删除或修改任何本地文件。仅命中 115 秒传时成功，不会回退成普通上传。",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "rapid_upload_path",
+                                            "label": "秒传目录（本地）",
+                                            "placeholder": self._default_rapid_upload_path() or "MoviePilot 默认下载目录",
+                                            "hint": "只处理此目录下的 qB 完成种子；留空使用 MoviePilot 优先级最高的本地下载目录，可用逗号分隔多个目录",
                                         },
                                     }
                                 ],
@@ -243,6 +299,7 @@ class Qb115RapidUpload(_PluginBase):
             "enabled": True,
             "cookie_115": "",
             "target_cid": "0",
+            "rapid_upload_path": self._rapid_upload_path or self._default_rapid_upload_path(),
             "retry_interval_minutes": 30,
             "stop_after_organized": True,
             "cancel_organize_after_success": True,
@@ -262,44 +319,87 @@ class Qb115RapidUpload(_PluginBase):
         }.get(status, status)
 
     def get_page(self) -> List[dict]:
-        tasks = self._repository.list_tasks(100) if self._repository else []
-        items = []
-        for task in tasks:
-            items.append(
-                {
-                    "id": task["id"],
-                    "name": task.get("torrent_name") or task.get("download_hash", "")[:12],
-                    "hash": task.get("download_hash", "")[:12],
-                    "status": self._status_text(task.get("status", "")),
-                    "files": f"{task.get('success_count', 0)}/{task.get('file_count', 0)}",
-                    "attempts": task.get("attempt_count", 0),
-                    "next_retry": task.get("next_retry_at") or "-",
-                    "error": task.get("last_error_message") or "-",
-                }
-            )
-        if not items:
+        tasks = self._repository.successful_tasks(100) if self._repository else []
+        if not tasks:
             return [
                 {
                     "component": "VAlert",
-                    "props": {"type": "info", "variant": "tonal", "text": "暂无秒传任务"},
+                    "props": {
+                        "type": "info",
+                        "variant": "tonal",
+                        "text": "暂无秒传成功记录。插件只会处理本次运行后新进入完成状态的 qB 种子。",
+                    },
                 }
             ]
+
+        def format_time(value: Any) -> str:
+            try:
+                parsed = datetime.fromisoformat(str(value))
+                return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            except (TypeError, ValueError, OverflowError):
+                return str(value or "-")
+
+        def format_size(value: Any) -> str:
+            try:
+                size = max(0, int(value or 0))
+            except (TypeError, ValueError):
+                return "-"
+            units = ("B", "KB", "MB", "GB", "TB", "PB")
+            number = float(size)
+            unit = units[0]
+            for unit in units:
+                if number < 1024 or unit == units[-1]:
+                    break
+                number /= 1024
+            return f"{number:.1f} {unit}" if unit != "B" else f"{int(number)} B"
+
+        def rapid_path(task: Dict[str, Any]) -> str:
+            cid = str(task.get("target_cid") or "0")
+            base = "115:/根目录" if cid == "0" else f"115:/目录ID/{cid}"
+            remote_dirs = str(task.get("remote_dirs") or "").strip()
+            return f"{base}/{remote_dirs}" if remote_dirs else base
+
+        items = [
+            {
+                "id": task["id"],
+                "name": task.get("torrent_name") or task.get("download_hash", "")[:12],
+                "hash": task.get("download_hash", "")[:12],
+                "success_time": format_time(task.get("rapid_uploaded_at")),
+                "size": format_size(task.get("total_size")),
+                "source_path": task.get("save_path") or task.get("content_path") or "-",
+                "rapid_path": rapid_path(task),
+            }
+            for task in tasks
+        ]
         return [
             {
-                "component": "VDataTable",
-                "props": {
-                    "headers": [
-                        {"title": "任务", "key": "name"},
-                        {"title": "Hash", "key": "hash"},
-                        {"title": "状态", "key": "status"},
-                        {"title": "文件", "key": "files"},
-                        {"title": "尝试", "key": "attempts"},
-                        {"title": "下次重试", "key": "next_retry"},
-                        {"title": "最近错误", "key": "error"},
-                    ],
-                    "items": items,
-                    "items-per-page": 25,
-                },
+                "component": "VRow",
+                "content": [
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12},
+                        "content": [
+                            {
+                                "component": "VDataTableVirtual",
+                                "props": {
+                                    "headers": [
+                                        {"title": "资源", "key": "name", "sortable": True},
+                                        {"title": "成功时间", "key": "success_time", "sortable": True},
+                                        {"title": "大小", "key": "size", "sortable": False},
+                                        {"title": "本地来源", "key": "source_path", "sortable": False},
+                                        {"title": "115 秒传路径", "key": "rapid_path", "sortable": False},
+                                    ],
+                                    "items": items,
+                                    "height": "32rem",
+                                    "density": "compact",
+                                    "fixed-header": True,
+                                    "hover": True,
+                                    "hide-no-data": True,
+                                },
+                            }
+                        ],
+                    }
+                ],
             }
         ]
 

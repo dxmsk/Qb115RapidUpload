@@ -3,13 +3,14 @@
     "name": "qB 115 秒传",
     "description": "qBittorrent 下载完成后只读计算 SHA1 并秒传至 115，支持重试及与 MoviePilot 整理队列协同",
     "labels": "下载管理,115,秒传,qBittorrent",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/upload.png",
     "author": "Codex",
     "level": 1,
     "v2": true,
     "system_version": ">=2.15.0,<3",
     "history": {
+      "v0.2.0": "改为只处理新进入完成状态的 qB 种子，增加本地秒传目录过滤、成功记录详情页和旧版全量扫描积压清理",
       "v0.1.0": "首个版本：下载完成检测、只读 SHA1 秒传、失败重试、整理后放弃、秒传成功后拦截重复整理"
     }
   }
