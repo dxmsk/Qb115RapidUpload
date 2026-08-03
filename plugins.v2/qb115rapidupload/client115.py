@@ -1,6 +1,6 @@
 import threading
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .hashing import sha1_range
 from .models import RapidUploadResult
@@ -105,19 +105,84 @@ class RapidUpload115Client:
             return False, str(exc) or exc.__class__.__name__
 
     def test_target(self, target_cid: str) -> Tuple[bool, str]:
-        if str(target_cid) == "0":
-            return True, "根目录"
         try:
-            response = self._get_client().fs_file(str(target_cid))
-            if isinstance(response, dict) and response.get("state") is not False:
-                data = response.get("data") or []
-                if isinstance(data, list) and data:
-                    data = data[0]
-                if isinstance(data, dict):
-                    name = data.get("file_name") or data.get("n") or target_cid
-                else:
-                    name = target_cid
-                return True, f"目标目录有效：{name}"
-            return False, self._error_message(response if isinstance(response, dict) else {})
+            listing = self.list_directories(str(target_cid or "0"))
+            return True, f"目标目录有效：{listing['path']}"
         except Exception as exc:
             return False, str(exc) or exc.__class__.__name__
+
+    @staticmethod
+    def _directory_path(response: Dict[str, Any]) -> str:
+        nodes = response.get("path") or []
+        names = []
+        if isinstance(nodes, list):
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                name = str(node.get("name") or node.get("n") or node.get("file_name") or "").strip()
+                if name and name not in {"根目录", "全部文件"}:
+                    names.append(name.strip("/"))
+        return "/" + "/".join(names) if names else "/"
+
+    @staticmethod
+    def _directory_item(item: Dict[str, Any]) -> Optional[Dict[str, str]]:
+        try:
+            is_dir = bool(item.get("is_dir"))
+            if "fc" in item:
+                is_dir = int(item.get("fc") or 0) == 0
+            elif "cid" in item:
+                is_dir = "fid" not in item
+            elif item.get("sha") or item.get("sha1") or item.get("s") or item.get("fs"):
+                is_dir = False
+            if not is_dir:
+                return None
+            directory_id = item.get("id") or item.get("cid") or item.get("file_id")
+            name = item.get("name") or item.get("n") or item.get("file_name")
+            if directory_id is None or not str(name or "").strip():
+                return None
+            return {
+                "id": str(directory_id),
+                "parent_id": str(item.get("parent_id") or item.get("pid") or "0"),
+                "name": str(name).strip(),
+            }
+        except (TypeError, ValueError):
+            return None
+
+    def list_directories(self, cid: str = "0") -> Dict[str, Any]:
+        """List one 115 directory level for the authenticated folder picker."""
+        normalized_cid = str(cid or "0").strip()
+        if not normalized_cid.isdigit():
+            raise ValueError("115 目录 ID 无效")
+        response = self._get_client().fs_files({
+            "cid": normalized_cid,
+            "limit": 1150,
+            "offset": 0,
+            "show_dir": 1,
+            "cur": 1,
+            "nf": 1,
+            "fc_mix": 0,
+            "o": "file_name",
+            "asc": 1,
+        })
+        if not isinstance(response, dict):
+            raise RuntimeError("115 返回的数据格式无效")
+        if response.get("state") is False:
+            raise RuntimeError(self._error_message(response))
+        data = response.get("data") or []
+        if isinstance(data, dict):
+            data = data.get("list") or data.get("data") or []
+        directories: List[Dict[str, str]] = []
+        if isinstance(data, list):
+            for raw in data:
+                if not isinstance(raw, dict):
+                    continue
+                item = self._directory_item(raw)
+                if item:
+                    directories.append(item)
+        directories.sort(key=lambda item: item["name"].casefold())
+        return {
+            "cid": normalized_cid,
+            "path": self._directory_path(response),
+            "directories": directories,
+            "truncated": len(directories) >= 1150,
+        }

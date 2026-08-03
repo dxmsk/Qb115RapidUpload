@@ -1,0 +1,13 @@
+
+.status-page[data-v-1dec6121] { padding: 8px 4px 20px; min-width: 0;
+}
+.page-toolbar[data-v-1dec6121] { position: sticky; top: 0; z-index: 5; background: rgba(var(--v-theme-surface), .96) !important;
+}
+.toolbar-copy[data-v-1dec6121] { min-width: 0; padding-left: 12px;
+}
+.name-cell[data-v-1dec6121], .path-cell[data-v-1dec6121] { display: block; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+@media (max-width: 600px) {
+.name-cell[data-v-1dec6121], .path-cell[data-v-1dec6121] { max-width: 220px;
+}
+}

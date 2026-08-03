@@ -33,24 +33,68 @@ class QbWebApiClient:
     def _ensure_session(self) -> requests.Session:
         if self._session is None:
             self._session = requests.Session()
+            # MoviePilot containers are often configured with a global HTTP
+            # proxy.  Requests would otherwise send private-LAN qB traffic to
+            # that proxy, which commonly answers 403 before qB ever sees it.
+            self._session.trust_env = False
             self._session.headers.update({
                 "Accept": "application/json, text/plain, */*",
-                "Referer": f"{self.base_url}/",
-                "User-Agent": "MoviePilot-Qb115RapidUpload/0.6.0",
+                "User-Agent": "MoviePilot-Qb115RapidUpload/0.7.0",
             })
         return self._session
 
-    def _login(self) -> None:
-        session = self._ensure_session()
+    def _allows_unauthenticated_api(self, session: requests.Session) -> bool:
+        """Detect qB's local-auth bypass before forcing a login request."""
         try:
-            response = session.post(
-                self._api_url("/api/v2/auth/login"),
-                data={"username": self.username, "password": self.password},
+            response = session.get(
+                self._api_url("/api/v2/app/version"),
                 timeout=self.REQUEST_TIMEOUT,
             )
+            return response.status_code == 200
+        except requests.RequestException:
+            return False
+
+    def _login(self) -> None:
+        session = self._ensure_session()
+        if self._allows_unauthenticated_api(session):
+            self._logged_in = True
+            return
+        try:
+            response = None
+            # qB versions and reverse proxies disagree on whether Origin is
+            # required.  Try the documented Referer form first, then a strict
+            # same-origin form, and finally a proxy-friendly header set.
+            header_variants = (
+                {"Referer": f"{self.base_url}/"},
+                {
+                    "Referer": self.base_url,
+                    "Origin": self.base_url,
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+                {},
+            )
+            for headers in header_variants:
+                response = session.post(
+                    self._api_url("/api/v2/auth/login"),
+                    data={"username": self.username, "password": self.password},
+                    headers=headers,
+                    timeout=self.REQUEST_TIMEOUT,
+                )
+                if response.status_code != 403:
+                    break
+            if response is None or response.status_code == 403:
+                detail = response.text.strip().replace("\r", " ").replace("\n", " ")[:200] if response else ""
+                suffix = f"；qB 响应：{detail}" if detail else ""
+                raise QbWebApiError(
+                    "qBittorrent 拒绝登录（HTTP 403）。插件已绕过容器 HTTP 代理并尝试多种同源头。"
+                    "请在 qB WebUI 设置中检查 Host Header/CSRF，或解除当前 MoviePilot IP 的登录封禁"
+                    f"{suffix}"
+                )
             response.raise_for_status()
         except requests.Timeout as exc:
             raise QbWebApiError("登录 qBittorrent 超时") from exc
+        except QbWebApiError:
+            raise
         except requests.RequestException as exc:
             raise QbWebApiError(f"无法连接 qBittorrent：{exc}") from exc
         if response.text.strip().lower() != "ok.":
@@ -155,4 +199,3 @@ class DirectQbService:
     def __init__(self, client: QbWebApiClient):
         self.module = _DirectQbModule()
         self.instance = _DirectQbInstance(client)
-

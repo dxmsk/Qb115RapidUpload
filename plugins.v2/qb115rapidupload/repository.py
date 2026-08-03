@@ -63,6 +63,7 @@ class TaskRepository:
                     save_path TEXT NOT NULL DEFAULT '',
                     content_path TEXT NOT NULL DEFAULT '',
                     target_cid TEXT NOT NULL DEFAULT '0',
+                    target_path TEXT NOT NULL DEFAULT '',
                     torrent_tags TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL,
                     reason_code TEXT,
@@ -132,6 +133,7 @@ class TaskRepository:
             }
             migrations = {
                 "torrent_tags": "TEXT NOT NULL DEFAULT ''",
+                "target_path": "TEXT NOT NULL DEFAULT ''",
                 "organize_status": "TEXT NOT NULL DEFAULT 'NONE'",
                 "organize_queued_at": "TEXT",
                 "organize_completed_at": "TEXT",
@@ -263,6 +265,7 @@ class TaskRepository:
         content_path: str,
         target_cid: str,
         files: Iterable[FileSnapshot],
+        target_path: str = "/",
         torrent_tags: str = "",
         organized: bool = False,
     ) -> Optional[int]:
@@ -275,9 +278,9 @@ class TaskRepository:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """INSERT INTO tasks(
-                       downloader,download_hash,torrent_name,save_path,content_path,target_cid,torrent_tags,status,
+                       downloader,download_hash,torrent_name,save_path,content_path,target_cid,target_path,torrent_tags,status,
                        detected_at,completed_at,organized_at,reason_code,created_at,updated_at
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(downloader,download_hash) DO NOTHING""",
                 (
                     downloader,
@@ -286,6 +289,7 @@ class TaskRepository:
                     save_path,
                     content_path or "",
                     str(target_cid or "0"),
+                    str(target_path or "/"),
                     str(torrent_tags or ""),
                     new_status,
                     now,
@@ -307,7 +311,7 @@ class TaskRepository:
             if old_status in TERMINAL_TASK_STATUSES:
                 return task_id
             connection.execute(
-                """UPDATE tasks SET torrent_name=?, save_path=?, content_path=?, target_cid=?,torrent_tags=?,
+                """UPDATE tasks SET torrent_name=?, save_path=?, content_path=?, target_cid=?,target_path=?,torrent_tags=?,
                        status=?, completed_at=COALESCE(completed_at,?), organized_at=?, reason_code=?,
                        cancel_requested=?, next_retry_at=NULL,last_error_code=NULL,last_error_message=NULL,
                        updated_at=?, version=version+1
@@ -317,6 +321,7 @@ class TaskRepository:
                     save_path,
                     content_path or "",
                     str(target_cid or "0"),
+                    str(target_path or "/"),
                     str(torrent_tags or ""),
                     new_status,
                     now,

@@ -48,12 +48,14 @@ class CompletionDetector:
         source_paths_getter=None,
         ignore_tags_getter=None,
         services_getter=None,
+        target_path_getter=None,
     ):
         self.repository = repository
         self.target_cid_getter = target_cid_getter
         self.source_paths_getter = source_paths_getter or (lambda: [])
         self.ignore_tags_getter = ignore_tags_getter or (lambda: set())
         self.services_getter = services_getter
+        self.target_path_getter = target_path_getter or (lambda: "/")
         self._scan_lock = threading.Lock()
         self._baseline_path = repository.db_path.parent / "qb_completed_baseline.json"
         self._completed_seen: Dict[str, set[str]] = {}
@@ -394,6 +396,7 @@ class CompletionDetector:
             content_path=str(_value(torrent, "content_path", "") or ""),
             target_cid=str(self.target_cid_getter() or "0"),
             files=files,
+            target_path=str(self.target_path_getter() or "/"),
             torrent_tags=tags,
             # Labels never imply an organized result.  Only the shared
             # exclusion field may skip a task; an actual MoviePilot transfer

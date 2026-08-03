@@ -21,7 +21,7 @@ class Qb115RapidUpload(_PluginBase):
     plugin_name = "qB 115 秒传整理联动"
     plugin_desc = "qB 完成任务先尝试 115 秒传，首轮失败后自动进入 MoviePilot 整理队列"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/upload.png"
-    plugin_version = "0.6.0"
+    plugin_version = "0.7.0"
     plugin_author = "Codex"
     author_url = ""
     plugin_config_prefix = "qb115rapidupload_"
@@ -39,6 +39,7 @@ class Qb115RapidUpload(_PluginBase):
         self._monitor_interval_seconds = 1
         self._cookie_115 = ""
         self._target_cid = "0"
+        self._target_path = "/"
         self._rapid_upload_path = ""
         self._rapid_upload_paths: List[str] = []
         self._retry_interval_minutes = 30
@@ -71,6 +72,7 @@ class Qb115RapidUpload(_PluginBase):
         )
         self._cookie_115 = str(config.get("cookie_115") or "").strip()
         self._target_cid = self._normalize_target_cid(config.get("target_cid", "0"))
+        self._target_path = self._normalize_target_path(config.get("target_path", "/"))
         self._rapid_upload_paths = self._normalize_rapid_paths(config.get("rapid_upload_path"))
         self._rapid_upload_path = "\n".join(self._rapid_upload_paths)
         self._retry_interval_minutes = self._normalize_retry(config.get("retry_interval_minutes", 30))
@@ -97,6 +99,7 @@ class Qb115RapidUpload(_PluginBase):
             source_paths_getter=lambda: self._rapid_upload_paths,
             ignore_tags_getter=lambda: self._ignore_tag_set,
             services_getter=lambda: {"qbittorrent": self._qb_service} if self._qb_service else {},
+            target_path_getter=lambda: self._target_path,
         )
         self._coordinator = TaskCoordinator(
             self._repository,
@@ -131,6 +134,12 @@ class Qb115RapidUpload(_PluginBase):
     def _normalize_target_cid(value: Any) -> str:
         value = str(value if value is not None else "0").strip()
         return value if re.fullmatch(r"\d+", value) else "0"
+
+    @staticmethod
+    def _normalize_target_path(value: Any) -> str:
+        path = str(value or "/").strip().replace("\\", "/")
+        path = re.sub(r"/+", "/", f"/{path.strip('/')}")
+        return path or "/"
 
     @staticmethod
     def _default_rapid_upload_path() -> str:
@@ -242,6 +251,13 @@ class Qb115RapidUpload(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "测试 115 目标目录",
+            },
+            {
+                "path": "/115/directories",
+                "endpoint": self.api_115_directories,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "浏览 115 目录",
             },
             {
                 "path": "/scan",
@@ -384,10 +400,11 @@ class Qb115RapidUpload(_PluginBase):
                                     {
                                         "component": "VTextField",
                                         "props": {
-                                            "model": "target_cid",
-                                            "label": "目标目录 ID",
-                                            "placeholder": "0",
-                                            "hint": "0 表示 115 根目录",
+                                            "model": "target_path",
+                                            "label": "115 秒传目标路径",
+                                            "placeholder": "/",
+                                            "hint": "请在 Vue 配置页面使用目录选择器；后台会自动保存对应目录 ID",
+                                            "readonly": True,
                                         },
                                     }
                                 ],
@@ -491,6 +508,7 @@ class Qb115RapidUpload(_PluginBase):
             "monitor_interval_seconds": 1,
             "cookie_115": "",
             "target_cid": "0",
+            "target_path": "/",
             "rapid_upload_path": self._rapid_upload_path or self._default_rapid_upload_path(),
             "retry_interval_minutes": 30,
             "stop_after_organized": True,
@@ -550,9 +568,13 @@ class Qb115RapidUpload(_PluginBase):
 
         def rapid_path(task: Dict[str, Any]) -> str:
             cid = str(task.get("target_cid") or "0")
-            base = "115:/根目录" if cid == "0" else f"115:/目录ID/{cid}"
+            stored_path = str(task.get("target_path") or "").strip()
+            if stored_path:
+                base = f"115:{self._normalize_target_path(stored_path)}"
+            else:
+                base = "115:/" if cid == "0" else f"115:/目录ID/{cid}"
             remote_dirs = str(task.get("remote_dirs") or "").strip()
-            return f"{base}/{remote_dirs}" if remote_dirs else base
+            return f"{base.rstrip('/')}/{remote_dirs}" if remote_dirs else base
 
         items = [
             {
@@ -777,6 +799,21 @@ class Qb115RapidUpload(_PluginBase):
             return {"code": 1, "data": {"ok": False, "message": "115 Cookie 未配置"}}
         ok, message = self._client.test_target(self._target_cid)
         return {"code": 0 if ok else 1, "data": {"ok": ok, "message": message}}
+
+    def api_115_directories(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        payload = payload or {}
+        cookie = str(payload.get("cookie") or self._cookie_115 or "").strip()
+        if not cookie:
+            return {"code": 1, "data": {"ok": False, "message": "请先填写 115 Cookie"}}
+        try:
+            client = self._client if cookie == self._cookie_115 and self._client else RapidUpload115Client(cookie)
+            listing = client.list_directories(str(payload.get("cid") or "0"))
+            return {"code": 0, "data": {"ok": True, **listing}}
+        except Exception as exc:
+            return {
+                "code": 1,
+                "data": {"ok": False, "message": str(exc) or exc.__class__.__name__},
+            }
 
     def api_scan(self) -> Dict[str, Any]:
         count = self._detector.scan() if self._detector else 0
