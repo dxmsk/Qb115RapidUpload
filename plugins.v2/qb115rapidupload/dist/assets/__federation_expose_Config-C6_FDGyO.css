@@ -1,0 +1,13 @@
+
+.config-page[data-v-d6803ba5] { padding: 8px 4px 20px;
+}
+.config-card[data-v-d6803ba5] { margin-top: 14px;
+}
+.folder-browser[data-v-d6803ba5] { min-height: 340px;
+}
+.folder-breadcrumbs[data-v-d6803ba5] { display: flex; min-width: 0; align-items: center; overflow-x: auto; padding-bottom: 12px;
+}
+.folder-loading[data-v-d6803ba5] { min-height: 260px; display: grid; place-items: center;
+}
+.path-preview[data-v-d6803ba5] { min-width: 0; max-width: 65%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}

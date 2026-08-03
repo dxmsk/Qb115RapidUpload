@@ -24,11 +24,13 @@ class OrganizerCoordinator:
         enabled_getter: Callable[[], bool],
         force_getter: Callable[[], bool],
         stop_requested: Callable[[], bool],
+        path_mapper: Callable[[str], str] = lambda value: str(value or ""),
     ):
         self.repository = repository
         self.enabled_getter = enabled_getter
         self.force_getter = force_getter
         self.stop_requested = stop_requested
+        self.path_mapper = path_mapper
 
     @staticmethod
     def _resolve_downloader_source(download_hash: str, fallback: str) -> str:
@@ -122,7 +124,9 @@ class OrganizerCoordinator:
                 f"继续等待下一轮秒传：{download_hash}"
             )
             return True
-        source_path = self._source_path({**task, "files": self.repository.files(task_id)})
+        source_path = self.path_mapper(
+            self._source_path({**task, "files": self.repository.files(task_id)})
+        )
         if not source_path or not Path(source_path).exists():
             self.repository.mark_organize_queued(task_id, source_path)
             self.repository.mark_organize_submit_failed(

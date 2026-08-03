@@ -13,6 +13,7 @@ from .client115 import RapidUpload115Client
 from .coordinator import TaskCoordinator
 from .detector import CompletionDetector
 from .organizer import OrganizerCoordinator
+from .pathmapping import LocalPathMapper, parse_path_mappings
 from .qbclient import DirectQbService, QbWebApiClient
 from .repository import TaskRepository
 
@@ -21,7 +22,7 @@ class Qb115RapidUpload(_PluginBase):
     plugin_name = "qB 115 秒传整理联动"
     plugin_desc = "qB 完成任务先尝试 115 秒传，首轮失败后自动进入 MoviePilot 整理队列"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/upload.png"
-    plugin_version = "0.7.3"
+    plugin_version = "0.7.5"
     plugin_author = "dxmsk"
     author_url = "https://github.com/dxmsk/Qb115RapidUpload"
     plugin_config_prefix = "qb115rapidupload_"
@@ -43,6 +44,8 @@ class Qb115RapidUpload(_PluginBase):
         self._target_path_cache: Dict[str, str] = {"0": "/"}
         self._rapid_upload_path = ""
         self._rapid_upload_paths: List[str] = []
+        self._path_mappings = ""
+        self._path_mapper = LocalPathMapper()
         self._retry_interval_minutes = 30
         self._stop_after_organized = True
         self._cancel_organize_after_success = True
@@ -83,6 +86,11 @@ class Qb115RapidUpload(_PluginBase):
             self._target_path_cache[self._target_cid] = self._target_path
         self._rapid_upload_paths = self._normalize_rapid_paths(config.get("rapid_upload_path"))
         self._rapid_upload_path = "\n".join(self._rapid_upload_paths)
+        self._path_mappings = str(config.get("path_mappings") or "").strip()
+        self._path_mapper = LocalPathMapper(
+            parse_path_mappings(self._path_mappings),
+            roots_getter=self._local_mapping_roots,
+        )
         self._retry_interval_minutes = self._normalize_retry(config.get("retry_interval_minutes", 30))
         self._stop_after_organized = bool(config.get("stop_after_organized", True))
         self._cancel_organize_after_success = bool(config.get("cancel_organize_after_success", True))
@@ -108,6 +116,7 @@ class Qb115RapidUpload(_PluginBase):
             ignore_tags_getter=lambda: self._ignore_tag_set,
             services_getter=lambda: {"qbittorrent": self._qb_service} if self._qb_service else {},
             target_path_getter=lambda: self._target_path,
+            path_mapper=self._path_mapper.map,
         )
         self._coordinator = TaskCoordinator(
             self._repository,
@@ -116,12 +125,14 @@ class Qb115RapidUpload(_PluginBase):
             stop_requested=self._stop_event.is_set,
             success_callback=self._on_rapid_success,
             failure_callback=self._on_rapid_failure,
+            path_mapper=self._path_mapper.map,
         )
         self._organizer = OrganizerCoordinator(
             self._repository,
             enabled_getter=lambda: self._auto_organize_enabled,
             force_getter=lambda: self._force_organize,
             stop_requested=self._stop_event.is_set,
+            path_mapper=self._path_mapper.map,
         )
         recovered = self._coordinator.recover_source_paths(self._has_transfer_history)
         if recovered:
@@ -150,19 +161,33 @@ class Qb115RapidUpload(_PluginBase):
         return path or "/"
 
     @staticmethod
-    def _default_rapid_upload_path() -> str:
-        """Use MoviePilot's highest-priority local download directory by default."""
+    def _moviepilot_download_paths() -> List[str]:
         try:
             from app.helper.directory import DirectoryHelper
 
             directories = DirectoryHelper().get_local_download_dirs()
+            paths = []
             for directory in directories:
                 path = str(getattr(directory, "download_path", "") or "").strip()
-                if path:
-                    return path
+                if path and path not in paths:
+                    paths.append(path)
+            return paths
         except Exception:
             pass
-        return ""
+        return []
+
+    @classmethod
+    def _default_rapid_upload_path(cls) -> str:
+        """Use MoviePilot's highest-priority local download directory by default."""
+        paths = cls._moviepilot_download_paths()
+        return paths[0] if paths else ""
+
+    def _local_mapping_roots(self) -> List[str]:
+        roots = []
+        for path in [*self._rapid_upload_paths, *self._moviepilot_download_paths()]:
+            if path and path not in roots:
+                roots.append(path)
+        return roots
 
     @classmethod
     def _normalize_rapid_paths(cls, value: Any) -> List[str]:
@@ -365,6 +390,22 @@ class Qb115RapidUpload(_PluginBase):
                                 "props": {"cols": 12},
                                 "content": [
                                     {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "path_mappings",
+                                            "label": "qB 到 MoviePilot 路径映射",
+                                            "placeholder": "/追新2 => /vol6/1000/追新2",
+                                            "rows": 2,
+                                            "hint": "通常可自动识别；复杂容器挂载时每行填写一条 qB 路径 => MoviePilot 可访问路径",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
                                         "component": "VTextField",
                                         "props": {
                                             "model": "rapid_upload_path",
@@ -518,6 +559,7 @@ class Qb115RapidUpload(_PluginBase):
             "target_cid": "0",
             "target_path": "/",
             "rapid_upload_path": self._rapid_upload_path or self._default_rapid_upload_path(),
+            "path_mappings": self._path_mappings,
             "retry_interval_minutes": 30,
             "stop_after_organized": True,
             "cancel_organize_after_success": True,

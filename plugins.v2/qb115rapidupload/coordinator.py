@@ -1,6 +1,6 @@
 import threading
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 from app.log import logger
 
@@ -12,6 +12,8 @@ LOG_PREFIX = "[qB 115 秒传]"
 
 
 class TaskCoordinator:
+    SOURCE_MISSING_RECHECK_SECONDS = 5
+
     def __init__(
         self,
         repository,
@@ -20,6 +22,7 @@ class TaskCoordinator:
         stop_requested=None,
         success_callback=None,
         failure_callback=None,
+        path_mapper=None,
     ):
         self.repository = repository
         self.client_getter = client_getter
@@ -29,6 +32,7 @@ class TaskCoordinator:
         self.failure_callback = failure_callback or (
             lambda _task_id, _code, _message: None
         )
+        self.path_mapper = path_mapper or (lambda value: str(value or ""))
         self._run_lock = threading.Lock()
 
     def process_due(self) -> int:
@@ -62,10 +66,10 @@ class TaskCoordinator:
                     continue
                 for item in files:
                     path = resolve_snapshot_path(
-                        save_path=task["save_path"],
-                        content_path=task.get("content_path") or "",
+                        save_path=self.path_mapper(task["save_path"]),
+                        content_path=self.path_mapper(task.get("content_path") or ""),
                         relative_path=item["relative_path"],
-                        absolute_path=item.get("absolute_path") or "",
+                        absolute_path=self.path_mapper(item.get("absolute_path") or ""),
                     )
                     resolved_paths[int(item["id"])] = str(path)
             except (FileNotFoundError, UnsafeSourcePath, OSError):
@@ -91,6 +95,25 @@ class TaskCoordinator:
             except Exception as exc:
                 logger.warning(f"{LOG_PREFIX} 秒传失败后触发自动整理失败：{exc}")
 
+    def _handle_missing(self, task_id: int, relative_path: str, exc: Optional[Exception] = None) -> None:
+        task = self.repository.task(task_id) or {}
+        if str(task.get("last_error_code") or "") == "SOURCE_MISSING_RECHECK":
+            self.repository.abandon_missing(task_id, relative_path)
+            detail = f" - {exc}" if exc else ""
+            logger.warning(
+                f"{LOG_PREFIX} 连续两次未找到原文件，放弃秒传：{relative_path}{detail}"
+            )
+            return
+        message = f"首次未找到原文件，{self.SOURCE_MISSING_RECHECK_SECONDS} 秒后复核：{relative_path}"
+        if self.repository.schedule_retry_seconds(
+            task_id,
+            seconds=self.SOURCE_MISSING_RECHECK_SECONDS,
+            code="SOURCE_MISSING_RECHECK",
+            message=message,
+        ):
+            detail = f" - {exc}" if exc else ""
+            logger.info(f"{LOG_PREFIX} {message}{detail}")
+
     def _process_task(self, task_id: int) -> None:
         task = self.repository.task(task_id)
         if not task:
@@ -104,16 +127,13 @@ class TaskCoordinator:
         for item in files:
             try:
                 path = resolve_snapshot_path(
-                    save_path=task["save_path"],
-                    content_path=task.get("content_path") or "",
+                    save_path=self.path_mapper(task["save_path"]),
+                    content_path=self.path_mapper(task.get("content_path") or ""),
                     relative_path=item["relative_path"],
-                    absolute_path=item.get("absolute_path") or "",
+                    absolute_path=self.path_mapper(item.get("absolute_path") or ""),
                 )
             except FileNotFoundError as exc:
-                self.repository.abandon_missing(task_id, item["relative_path"])
-                logger.warning(
-                    f"{LOG_PREFIX} 原文件不存在，放弃秒传：{item['relative_path']} - {exc}"
-                )
+                self._handle_missing(task_id, item["relative_path"], exc)
                 return
             except UnsafeSourcePath as exc:
                 self.repository.cancel(
@@ -167,7 +187,7 @@ class TaskCoordinator:
                 self.repository.mark_file_success(item["id"], result.remote_file_id)
                 logger.info(f"{LOG_PREFIX} 文件秒传成功：{item['relative_path']}")
             except FileNotFoundError:
-                self.repository.abandon_missing(task_id, item["relative_path"])
+                self._handle_missing(task_id, item["relative_path"])
                 return
             except HashingCancelled:
                 return

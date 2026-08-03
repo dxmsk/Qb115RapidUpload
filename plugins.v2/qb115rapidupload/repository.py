@@ -548,9 +548,17 @@ class TaskRepository:
             )
 
     def schedule_retry(self, task_id: int, minutes: int, code: str, message: str) -> bool:
+        return self.schedule_retry_seconds(
+            task_id,
+            seconds=max(1, int(minutes)) * 60,
+            code=code,
+            message=message,
+        )
+
+    def schedule_retry_seconds(self, task_id: int, seconds: int, code: str, message: str) -> bool:
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat(timespec="seconds")
-        retry_at = (now_dt + timedelta(minutes=max(1, int(minutes)))).isoformat(timespec="seconds")
+        retry_at = (now_dt + timedelta(seconds=max(1, int(seconds)))).isoformat(timespec="seconds")
         safe_message = (message or "")[:1000]
         with self._lock, self._connect() as connection:
             updated = connection.execute(

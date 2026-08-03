@@ -49,6 +49,7 @@ class CompletionDetector:
         ignore_tags_getter=None,
         services_getter=None,
         target_path_getter=None,
+        path_mapper=None,
     ):
         self.repository = repository
         self.target_cid_getter = target_cid_getter
@@ -56,6 +57,7 @@ class CompletionDetector:
         self.ignore_tags_getter = ignore_tags_getter or (lambda: set())
         self.services_getter = services_getter
         self.target_path_getter = target_path_getter or (lambda: "/")
+        self.path_mapper = path_mapper or (lambda value: str(value or ""))
         self._scan_lock = threading.Lock()
         self._baseline_path = repository.db_path.parent / "qb_completed_baseline.json"
         self._completed_seen: Dict[str, set[str]] = {}
@@ -131,7 +133,7 @@ class CompletionDetector:
             return False
         for root in roots:
             try:
-                root_path = os.path.normcase(os.path.realpath(root))
+                root_path = os.path.normcase(os.path.realpath(self.path_mapper(root)))
                 if os.path.commonpath((candidate, root_path)) == root_path:
                     return True
             except (OSError, ValueError):
@@ -345,10 +347,15 @@ class CompletionDetector:
                 f"({', '.join(sorted(matched_ignored_tags))})"
             )
             return False
-        save_path = str(_value(torrent, "save_path", "") or "")
-        if not save_path:
+        raw_save_path = str(_value(torrent, "save_path", "") or "")
+        if not raw_save_path:
             logger.warning(f"{LOG_PREFIX} qB 任务缺少保存目录，跳过：{download_hash[:12]}")
             return False
+        save_path = self.path_mapper(raw_save_path)
+        raw_content_path = str(_value(torrent, "content_path", "") or "")
+        content_path = self.path_mapper(raw_content_path)
+        if save_path != raw_save_path:
+            logger.info(f"{LOG_PREFIX} 已应用 qB 本地路径映射：{raw_save_path} -> {save_path}")
         task = service_watching.get(download_hash)
         task_id = int(task["id"]) if task else self.repository.register_watching(
             service_name,
@@ -379,7 +386,7 @@ class CompletionDetector:
                 service,
                 download_hash,
                 save_path,
-                str(_value(torrent, "content_path", "") or ""),
+                content_path,
             )
         except Exception as exc:
             self.repository.schedule_watch_retry(task_id, minutes=5, message=str(exc))
@@ -393,7 +400,7 @@ class CompletionDetector:
             download_hash=download_hash,
             torrent_name=str(_value(torrent, "title", "") or _value(torrent, "name", "") or ""),
             save_path=save_path,
-            content_path=str(_value(torrent, "content_path", "") or ""),
+            content_path=content_path,
             target_cid=str(self.target_cid_getter() or "0"),
             files=files,
             target_path=str(self.target_path_getter() or ""),
