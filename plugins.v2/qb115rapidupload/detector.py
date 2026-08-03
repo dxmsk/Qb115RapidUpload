@@ -396,7 +396,7 @@ class CompletionDetector:
             content_path=str(_value(torrent, "content_path", "") or ""),
             target_cid=str(self.target_cid_getter() or "0"),
             files=files,
-            target_path=str(self.target_path_getter() or "/"),
+            target_path=str(self.target_path_getter() or ""),
             torrent_tags=tags,
             # Labels never imply an organized result.  Only the shared
             # exclusion field may skip a task; an actual MoviePilot transfer

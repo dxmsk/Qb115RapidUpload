@@ -186,3 +186,30 @@ class RapidUpload115Client:
             "directories": directories,
             "truncated": len(directories) >= 1150,
         }
+
+    def resolve_directory_path(self, cid: str) -> str:
+        normalized_cid = str(cid or "0").strip()
+        if normalized_cid == "0":
+            return "/"
+        if not normalized_cid.isdigit():
+            raise ValueError("115 目录 ID 无效")
+        try:
+            from p115client.tool import get_path
+
+            path = get_path(
+                self._get_client(),
+                int(normalized_cid),
+                ensure_file=False,
+                refresh=True,
+                escape=False,
+            )
+            normalized = str(path or "").strip().replace("\\", "/")
+            if normalized:
+                return "/" + normalized.strip("/")
+        except Exception:
+            pass
+        listing = self.list_directories(normalized_cid)
+        path = str(listing.get("path") or "").strip()
+        if path and path != "/":
+            return "/" + path.strip("/")
+        raise RuntimeError(f"无法解析 115 目录真实路径：{normalized_cid}")

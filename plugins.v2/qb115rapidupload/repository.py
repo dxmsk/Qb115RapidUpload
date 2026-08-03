@@ -289,7 +289,7 @@ class TaskRepository:
                     save_path,
                     content_path or "",
                     str(target_cid or "0"),
-                    str(target_path or "/"),
+                    str(target_path or ""),
                     str(torrent_tags or ""),
                     new_status,
                     now,
@@ -321,7 +321,7 @@ class TaskRepository:
                     save_path,
                     content_path or "",
                     str(target_cid or "0"),
-                    str(target_path or "/"),
+                    str(target_path or ""),
                     str(torrent_tags or ""),
                     new_status,
                     now,
@@ -839,6 +839,22 @@ class TaskRepository:
                 (max(1, min(int(limit), 500)),),
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def backfill_target_path(self, target_cid: str, target_path: str) -> int:
+        """Persist a resolved real path for legacy CID-only task records."""
+        cid = str(target_cid or "0")
+        path = str(target_path or "").strip()
+        if not path:
+            return 0
+        now = utcnow()
+        with self._lock, self._connect() as connection:
+            return int(
+                connection.execute(
+                    """UPDATE tasks SET target_path=?,updated_at=?,version=version+1
+                       WHERE target_cid=? AND (target_path='' OR (target_path='/' AND target_cid<>'0'))""",
+                    (path, now, cid),
+                ).rowcount
+            )
 
     def successful_tasks(self, limit: int = 100) -> List[Dict[str, Any]]:
         with self._lock, self._connect() as connection:

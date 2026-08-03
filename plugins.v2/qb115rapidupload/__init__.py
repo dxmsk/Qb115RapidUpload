@@ -21,7 +21,7 @@ class Qb115RapidUpload(_PluginBase):
     plugin_name = "qB 115 秒传整理联动"
     plugin_desc = "qB 完成任务先尝试 115 秒传，首轮失败后自动进入 MoviePilot 整理队列"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/upload.png"
-    plugin_version = "0.7.0"
+    plugin_version = "0.7.1"
     plugin_author = "Codex"
     author_url = ""
     plugin_config_prefix = "qb115rapidupload_"
@@ -40,6 +40,7 @@ class Qb115RapidUpload(_PluginBase):
         self._cookie_115 = ""
         self._target_cid = "0"
         self._target_path = "/"
+        self._target_path_cache: Dict[str, str] = {"0": "/"}
         self._rapid_upload_path = ""
         self._rapid_upload_paths: List[str] = []
         self._retry_interval_minutes = 30
@@ -73,6 +74,13 @@ class Qb115RapidUpload(_PluginBase):
         self._cookie_115 = str(config.get("cookie_115") or "").strip()
         self._target_cid = self._normalize_target_cid(config.get("target_cid", "0"))
         self._target_path = self._normalize_target_path(config.get("target_path", "/"))
+        if self._target_cid != "0" and self._target_path == "/":
+            # Older configs only stored a CID.  Do not mislabel that CID as
+            # root; it will be resolved lazily with the configured Cookie.
+            self._target_path = ""
+        self._target_path_cache = {"0": "/"}
+        if self._target_path:
+            self._target_path_cache[self._target_cid] = self._target_path
         self._rapid_upload_paths = self._normalize_rapid_paths(config.get("rapid_upload_path"))
         self._rapid_upload_path = "\n".join(self._rapid_upload_paths)
         self._retry_interval_minutes = self._normalize_retry(config.get("retry_interval_minutes", 30))
@@ -531,8 +539,32 @@ class Qb115RapidUpload(_PluginBase):
             "CANCELLED": "已取消",
         }.get(status, status)
 
+    def _fill_real_target_paths(self, tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not tasks:
+            return tasks
+        for task in tasks:
+            cid = str(task.get("target_cid") or "0")
+            stored = str(task.get("target_path") or "").strip()
+            if stored and not (cid != "0" and stored == "/"):
+                self._target_path_cache[cid] = self._normalize_target_path(stored)
+                continue
+            path = self._target_path_cache.get(cid)
+            if not path and self._client:
+                try:
+                    path = self._normalize_target_path(self._client.resolve_directory_path(cid))
+                    self._target_path_cache[cid] = path
+                    if self._repository:
+                        self._repository.backfill_target_path(cid, path)
+                except Exception as exc:
+                    logger.debug(f"{self.LOG_PREFIX} 解析旧任务 115 目录路径失败：{cid} - {exc}")
+            if path:
+                task["target_path"] = path
+        return tasks
+
     def get_page(self) -> List[dict]:
-        tasks = self._repository.successful_tasks(100) if self._repository else []
+        tasks = self._fill_real_target_paths(
+            self._repository.successful_tasks(100) if self._repository else []
+        )
         if not tasks:
             return [
                 {
@@ -772,7 +804,8 @@ class Qb115RapidUpload(_PluginBase):
         logger.info(f"{self.LOG_PREFIX} {reason}：{Path(str(path)).name}")
 
     def api_tasks(self, limit: int = 100) -> Dict[str, Any]:
-        return {"code": 0, "data": self._repository.list_tasks(limit) if self._repository else []}
+        tasks = self._repository.list_tasks(limit) if self._repository else []
+        return {"code": 0, "data": self._fill_real_target_paths(tasks)}
 
     def api_retry(self, task_id: int) -> Dict[str, Any]:
         ok = bool(self._repository and self._repository.retry_now(task_id))

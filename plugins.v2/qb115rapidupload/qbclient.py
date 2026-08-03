@@ -39,7 +39,7 @@ class QbWebApiClient:
             self._session.trust_env = False
             self._session.headers.update({
                 "Accept": "application/json, text/plain, */*",
-                "User-Agent": "MoviePilot-Qb115RapidUpload/0.7.0",
+                "User-Agent": "MoviePilot-Qb115RapidUpload/0.7.1",
             })
         return self._session
 
