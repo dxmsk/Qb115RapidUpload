@@ -115,6 +115,13 @@ class OrganizerCoordinator:
         task = self.repository.task(task_id)
         if not task or task.get("status") != "RETRY_WAIT":
             return False
+        download_hash = str(task.get("download_hash") or "")[:12]
+        if str(task.get("organize_status") or "NONE") == "QUEUED":
+            logger.info(
+                f"{LOG_PREFIX} 本轮秒传仍未命中，任务仍在 MoviePilot 整理队列，"
+                f"继续等待下一轮秒传：{download_hash}"
+            )
+            return True
         source_path = self._source_path({**task, "files": self.repository.files(task_id)})
         if not source_path or not Path(source_path).exists():
             self.repository.mark_organize_queued(task_id, source_path)
@@ -146,7 +153,7 @@ class OrganizerCoordinator:
                 raise RuntimeError(str(message or "MoviePilot 拒绝整理任务"))
             logger.info(
                 f"{LOG_PREFIX} 秒传失败后已加入 MoviePilot 整理队列："
-                f"{str(task.get('download_hash') or '')[:12]}"
+                f"{download_hash}；同时等待下一轮秒传"
             )
             return True
         except Exception as exc:

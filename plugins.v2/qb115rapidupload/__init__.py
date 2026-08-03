@@ -21,7 +21,7 @@ class Qb115RapidUpload(_PluginBase):
     plugin_name = "qB 115 秒传整理联动"
     plugin_desc = "qB 完成任务先尝试 115 秒传，首轮失败后自动进入 MoviePilot 整理队列"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/upload.png"
-    plugin_version = "0.7.2"
+    plugin_version = "0.7.3"
     plugin_author = "dxmsk"
     author_url = "https://github.com/dxmsk/Qb115RapidUpload"
     plugin_config_prefix = "qb115rapidupload_"
