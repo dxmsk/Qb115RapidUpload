@@ -47,11 +47,13 @@ class CompletionDetector:
         target_cid_getter,
         source_paths_getter=None,
         ignore_tags_getter=None,
+        services_getter=None,
     ):
         self.repository = repository
         self.target_cid_getter = target_cid_getter
         self.source_paths_getter = source_paths_getter or (lambda: [])
         self.ignore_tags_getter = ignore_tags_getter or (lambda: set())
+        self.services_getter = services_getter
         self._scan_lock = threading.Lock()
         self._baseline_path = repository.db_path.parent / "qb_completed_baseline.json"
         self._completed_seen: Dict[str, set[str]] = {}
@@ -92,10 +94,15 @@ class CompletionDetector:
     def qb_services() -> Dict[str, Any]:
         return DownloaderHelper().get_services(type_filter="qbittorrent") or {}
 
+    def _qb_services(self) -> Dict[str, Any]:
+        if self.services_getter:
+            return self.services_getter() or {}
+        return self.qb_services()
+
     def register_download(self, downloader: str, download_hash: str, torrent_name: str = "") -> bool:
         if not downloader or not download_hash:
             return False
-        service = self.qb_services().get(downloader)
+        service = self._qb_services().get(downloader)
         if not service:
             return False
         self.repository.register_watching(downloader, download_hash, torrent_name)
@@ -264,7 +271,7 @@ class CompletionDetector:
             for task in watching:
                 watching_by_service.setdefault(task["downloader"], {})[task["download_hash"].lower()] = task
 
-            for service_name, service in self.qb_services().items():
+            for service_name, service in self._qb_services().items():
                 if time.monotonic() < self._service_retry_after.get(service_name, 0):
                     continue
                 try:
@@ -379,7 +386,6 @@ class CompletionDetector:
         if not files:
             self.repository.schedule_watch_retry(task_id, minutes=5, message="qB 文件列表为空")
             return False
-        organized = "已整理" in self._tags(tags)
         snapshot_id = self.repository.snapshot_completed(
             downloader=service_name,
             download_hash=download_hash,
@@ -389,7 +395,10 @@ class CompletionDetector:
             target_cid=str(self.target_cid_getter() or "0"),
             files=files,
             torrent_tags=tags,
-            organized=organized,
+            # Labels never imply an organized result.  Only the shared
+            # exclusion field may skip a task; an actual MoviePilot transfer
+            # event is the authority for organized state.
+            organized=False,
         )
         if snapshot_id:
             logger.info(f"{LOG_PREFIX} 已登记 qB 完成任务：{download_hash[:12]}")

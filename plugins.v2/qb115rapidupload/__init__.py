@@ -13,6 +13,7 @@ from .client115 import RapidUpload115Client
 from .coordinator import TaskCoordinator
 from .detector import CompletionDetector
 from .organizer import OrganizerCoordinator
+from .qbclient import DirectQbService, QbWebApiClient
 from .repository import TaskRepository
 
 
@@ -20,7 +21,7 @@ class Qb115RapidUpload(_PluginBase):
     plugin_name = "qB 115 秒传整理联动"
     plugin_desc = "qB 完成任务先尝试 115 秒传，首轮失败后自动进入 MoviePilot 整理队列"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/upload.png"
-    plugin_version = "0.5.0"
+    plugin_version = "0.6.0"
     plugin_author = "Codex"
     author_url = ""
     plugin_config_prefix = "qb115rapidupload_"
@@ -32,6 +33,10 @@ class Qb115RapidUpload(_PluginBase):
     def __init__(self):
         super().__init__()
         self._enabled = True
+        self._qb_url = "http://127.0.0.1:8080"
+        self._username = "admin"
+        self._password = ""
+        self._monitor_interval_seconds = 1
         self._cookie_115 = ""
         self._target_cid = "0"
         self._rapid_upload_path = ""
@@ -40,12 +45,14 @@ class Qb115RapidUpload(_PluginBase):
         self._stop_after_organized = True
         self._cancel_organize_after_success = True
         self._auto_organize_enabled = True
-        self._ignore_tags = "已整理,刷流"
-        self._ignore_tag_set: set[str] = {"已整理", "刷流"}
+        self._ignore_tags = ""
+        self._ignore_tag_set: set[str] = set()
         self._force_organize = False
         self._organize_lock = threading.Lock()
         self._repository: Optional[TaskRepository] = None
         self._client: Optional[RapidUpload115Client] = None
+        self._qb_client: Optional[QbWebApiClient] = None
+        self._qb_service: Optional[DirectQbService] = None
         self._detector: Optional[CompletionDetector] = None
         self._coordinator: Optional[TaskCoordinator] = None
         self._organizer: Optional[OrganizerCoordinator] = None
@@ -53,7 +60,15 @@ class Qb115RapidUpload(_PluginBase):
 
     def init_plugin(self, config: dict = None):
         config = dict(config or {})
+        if self._qb_client:
+            self._qb_client.close()
         self._enabled = bool(config.get("enabled", True))
+        self._qb_url = str(config.get("qb_url") or "http://127.0.0.1:8080").strip().rstrip("/")
+        self._username = str(config.get("username") or "admin").strip()
+        self._password = str(config.get("password") or "")
+        self._monitor_interval_seconds = self._normalize_monitor_interval(
+            config.get("monitor_interval_seconds", config.get("interval", 1))
+        )
         self._cookie_115 = str(config.get("cookie_115") or "").strip()
         self._target_cid = self._normalize_target_cid(config.get("target_cid", "0"))
         self._rapid_upload_paths = self._normalize_rapid_paths(config.get("rapid_upload_path"))
@@ -62,18 +77,26 @@ class Qb115RapidUpload(_PluginBase):
         self._stop_after_organized = bool(config.get("stop_after_organized", True))
         self._cancel_organize_after_success = bool(config.get("cancel_organize_after_success", True))
         self._auto_organize_enabled = bool(config.get("auto_organize_enabled", True))
-        self._ignore_tags = str(config.get("ignore_tags") or "已整理,刷流").strip()
+        self._ignore_tags = str(config.get("ignore_tags") or "").strip()
         self._ignore_tag_set = self._parse_tags(self._ignore_tags)
         self._force_organize = bool(config.get("force_organize", False))
         self._stop_event.clear()
 
         self._repository = TaskRepository(self.get_data_path() / "qb115rapidupload.db")
         self._client = RapidUpload115Client(self._cookie_115) if self._cookie_115 else None
+        self._qb_client = None
+        self._qb_service = None
+        try:
+            self._qb_client = QbWebApiClient(self._qb_url, self._username, self._password)
+            self._qb_service = DirectQbService(self._qb_client)
+        except Exception as exc:
+            logger.error(f"{self.LOG_PREFIX} qBittorrent 配置无效：{exc}")
         self._detector = CompletionDetector(
             self._repository,
             lambda: self._target_cid,
             source_paths_getter=lambda: self._rapid_upload_paths,
             ignore_tags_getter=lambda: self._ignore_tag_set,
+            services_getter=lambda: {"qbittorrent": self._qb_service} if self._qb_service else {},
         )
         self._coordinator = TaskCoordinator(
             self._repository,
@@ -149,6 +172,13 @@ class Qb115RapidUpload(_PluginBase):
             return 30
 
     @staticmethod
+    def _normalize_monitor_interval(value: Any) -> int:
+        try:
+            return min(3600, max(1, int(value)))
+        except (TypeError, ValueError):
+            return 1
+
+    @staticmethod
     def _parse_tags(value: Any) -> set[str]:
         if value is None:
             return set()
@@ -193,6 +223,13 @@ class Qb115RapidUpload(_PluginBase):
                 "summary": "取消秒传任务",
             },
             {
+                "path": "/test_qb",
+                "endpoint": self.api_test_qb,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "测试 qBittorrent 登录",
+            },
+            {
                 "path": "/test_cookie",
                 "endpoint": self.api_test_cookie,
                 "methods": ["POST"],
@@ -230,6 +267,61 @@ class Qb115RapidUpload(_PluginBase):
                     {
                         "component": "VRow",
                         "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "qb_url",
+                                            "label": "qBittorrent 地址",
+                                            "placeholder": "http://127.0.0.1:8080",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {"model": "username", "label": "qB 用户名"},
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "password",
+                                            "label": "qB 密码",
+                                            "type": "password",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "monitor_interval_seconds",
+                                            "label": "qB 监控轮询间隔（秒）",
+                                            "type": "number",
+                                            "min": 1,
+                                            "max": 3600,
+                                            "hint": "秒传与自动整理共同使用此完成任务监控",
+                                        },
+                                    }
+                                ],
+                            },
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12},
@@ -381,8 +473,8 @@ class Qb115RapidUpload(_PluginBase):
                                         "props": {
                                             "model": "ignore_tags",
                                             "label": "排除 qB 标签",
-                                            "placeholder": "已整理,刷流",
-                                            "hint": "逗号、空格或中文逗号分隔；命中任一标签的任务不会秒传，也不会自动整理",
+                                            "placeholder": "例如：刷流,已整理",
+                                            "hint": "留空处理所有标签；命中任一排除标签的任务既不秒传也不自动整理",
                                         },
                                     }
                                 ],
@@ -393,6 +485,10 @@ class Qb115RapidUpload(_PluginBase):
             }
         ], {
             "enabled": True,
+            "qb_url": "http://127.0.0.1:8080",
+            "username": "admin",
+            "password": "",
+            "monitor_interval_seconds": 1,
             "cookie_115": "",
             "target_cid": "0",
             "rapid_upload_path": self._rapid_upload_path or self._default_rapid_upload_path(),
@@ -401,7 +497,7 @@ class Qb115RapidUpload(_PluginBase):
             "cancel_organize_after_success": True,
             "auto_organize_enabled": True,
             "force_organize": False,
-            "ignore_tags": "已整理,刷流",
+            "ignore_tags": "",
         }
 
     @staticmethod
@@ -511,7 +607,7 @@ class Qb115RapidUpload(_PluginBase):
                 "name": "qB 下载完成秒级检测",
                 "trigger": "interval",
                 "func": self.detect_completed,
-                "kwargs": {"seconds": 1},
+                "kwargs": {"seconds": self._monitor_interval_seconds},
             },
             {
                 "id": "Qb115RapidUpload.Process",
@@ -531,6 +627,8 @@ class Qb115RapidUpload(_PluginBase):
 
     def stop_service(self):
         self._stop_event.set()
+        if self._qb_client:
+            self._qb_client.close()
 
     def detect_completed(self):
         if not self._enabled or self._stop_event.is_set() or not self._detector:
@@ -667,6 +765,12 @@ class Qb115RapidUpload(_PluginBase):
             return {"code": 1, "data": {"ok": False, "message": "115 Cookie 未配置"}}
         ok, message = self._client.test_cookie()
         return {"code": 0 if ok else 1, "data": {"ok": ok, "message": message}}
+
+    def api_test_qb(self) -> Dict[str, Any]:
+        if not self._qb_client:
+            return {"code": 1, "data": {"ok": False, "message": "qBittorrent 配置无效"}}
+        ok, message, detail = self._qb_client.test_connection()
+        return {"code": 0 if ok else 1, "data": {"ok": ok, "message": message, **detail}}
 
     def api_test_target(self) -> Dict[str, Any]:
         if not self._client:
