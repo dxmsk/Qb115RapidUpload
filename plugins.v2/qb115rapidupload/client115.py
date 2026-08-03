@@ -70,7 +70,7 @@ class RapidUpload115Client:
                 return RapidUploadResult(
                     False,
                     "NOT_REUSABLE",
-                    "115 未命中秒传；插件不会回退为普通上传",
+                    "115 云端暂无相同 SHA1/大小的文件，未命中秒传；这不是网络或 Cookie 错误，插件不会普通上传，将按配置间隔重试",
                 )
             message = self._error_message(response)
             lower_message = message.lower()

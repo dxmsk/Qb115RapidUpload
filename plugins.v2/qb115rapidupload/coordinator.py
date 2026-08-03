@@ -81,7 +81,11 @@ class TaskCoordinator:
             code=code,
             message=message,
         ):
-            logger.warning(f"{LOG_PREFIX} 秒传失败，将自动重试：{code} - {message}")
+            log_message = f"{LOG_PREFIX} 秒传失败，将自动重试：{code} - {message}"
+            if code == "NOT_REUSABLE":
+                logger.info(log_message)
+            else:
+                logger.warning(log_message)
             try:
                 self.failure_callback(task_id, code, message)
             except Exception as exc:
