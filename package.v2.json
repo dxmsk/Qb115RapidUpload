@@ -1,15 +1,20 @@
 {
   "Qb115RapidUpload": {
-    "name": "qB 115 秒传",
-    "description": "qBittorrent 下载完成后只读计算 SHA1 并秒传至 115，支持重试及与 MoviePilot 整理队列协同",
-    "labels": "下载管理,115,秒传,qBittorrent",
-    "version": "0.2.0",
+    "name": "qB 115 秒传整理联动",
+    "description": "统一秒级监控 qBittorrent 完成任务，优先只读秒传至 115，失败后自动进入 MoviePilot 整理队列",
+    "labels": "下载管理,115,秒传,qBittorrent,自动整理",
+    "version": "0.5.0",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/upload.png",
     "author": "Codex",
     "level": 1,
     "v2": true,
     "system_version": ">=2.15.0,<3",
     "history": {
+      "v0.5.0": "合并 qB 自动整理助手：统一 1 秒完成监控，首次秒传失败后立即入 MoviePilot 整理队列，后续秒传成功自动取消整理；默认排除已整理、刷流标签，并提供秒传与整理双页面",
+      "v0.4.2": "修复 qB 内容目录与文件名重复拼接导致的原文件不存在误判，兼容 save_path/content_path 多种布局，并自动恢复可解析的旧误判任务",
+      "v0.4.1": "调整联动时序：首次秒传失败后允许自动整理入队，后续重试成功时主动移除对应整理队列并由拦截器兜底",
+      "v0.4.0": "增加与 qB 自动整理助手的可选联动：秒传处理中优先等待，秒传成功后跳过重复整理；任一插件停用时仍可独立运行",
+      "v0.3.0": "融合 qB 自动整理助手的完成哈希基线与去重策略，改为复用 MoviePilot qB 客户端进行 1 秒级完成监控并立即触发秒传",
       "v0.2.0": "改为只处理新进入完成状态的 qB 种子，增加本地秒传目录过滤、成功记录详情页和旧版全量扫描积压清理",
       "v0.1.0": "首个版本：下载完成检测、只读 SHA1 秒传、失败重试、整理后放弃、秒传成功后拦截重复整理"
     }
